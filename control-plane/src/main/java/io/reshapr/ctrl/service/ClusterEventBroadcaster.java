@@ -24,7 +24,9 @@ import com.hazelcast.topic.ITopic;
 import io.quarkus.grpc.GrpcService;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.event.TransactionPhase;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -35,13 +37,16 @@ public class ClusterEventBroadcaster {
 
    private final HazelcastInstance hazelcast;
    private final ExpositionDiscoveryServiceHandler expositionDiscoveryServiceHandler;
+   private final Event<ClusterEvents.ExpositionGatewayGroupEvent> expositionChanges;
 
    private ITopic<ClusterEvents.ExpositionGatewayGroupEvent> expositionChangesTopic;
 
    public ClusterEventBroadcaster(HazelcastInstance hazelcast,
-                                  @GrpcService ExpositionDiscoveryServiceHandler expositionDiscoveryServiceHandler) {
+                                  @GrpcService ExpositionDiscoveryServiceHandler expositionDiscoveryServiceHandler,
+                                  Event<ClusterEvents.ExpositionGatewayGroupEvent> expositionChanges) {
       this.hazelcast = hazelcast;
       this.expositionDiscoveryServiceHandler = expositionDiscoveryServiceHandler;
+      this.expositionChanges = expositionChanges;
    }
 
    /** Application startup method. */
@@ -60,7 +65,7 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionCreationEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition creation for exposition '%s'", exposition.id);
-      expositionChangesTopic.publish(new ClusterEvents.ExpositionGatewayGroupCreationEvent(exposition, gatewayGroup));
+      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupCreationEvent(exposition, gatewayGroup));
    }
 
    /**
@@ -70,7 +75,7 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionUpdateEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition change for exposition '%s'", exposition.id);
-      expositionChangesTopic.publish(new ClusterEvents.ExpositionGatewayGroupUpdateEvent(exposition, gatewayGroup));
+      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupUpdateEvent(exposition, gatewayGroup));
    }
 
    /**
@@ -80,7 +85,13 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionDeletionEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition deletion for exposition '%s'", exposition.id);
-      expositionChangesTopic.publish(new ClusterEvents.ExpositionGatewayGroupDeletionEvent(exposition, gatewayGroup));
+      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupDeletionEvent(exposition, gatewayGroup));
+   }
+
+   void publishExpositionChangeAfterCommit(
+         @Observes(during = TransactionPhase.AFTER_SUCCESS) ClusterEvents.ExpositionGatewayGroupEvent event) {
+      // A gateway fetching artifacts must see the committed exposition, not only a flushed row.
+      expositionChangesTopic.publish(event);
    }
 
    private void receiveExpositionChangeEvent(ClusterEvents.ExpositionGatewayGroupEvent event) {
