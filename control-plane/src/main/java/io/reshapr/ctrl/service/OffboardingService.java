@@ -46,7 +46,7 @@ import java.util.List;
  *
  * <p>Exposition removal is delegated to {@link ServiceManagerService#deleteService(String)} which
  * itself relies on {@link ConfigurationPlanManagerService} and {@link ExpositionManagerService},
- * so cluster-wide deletion events are broadcast to listening Gateways before rows are dropped.</p>
+ * so deletion events are queued before row removal and broadcast to listening Gateways after a successful commit.</p>
  *
  * <p>The {@code reshapr} root organization cannot be deleted, and its owner user is protected
  * from deletion as well.</p>

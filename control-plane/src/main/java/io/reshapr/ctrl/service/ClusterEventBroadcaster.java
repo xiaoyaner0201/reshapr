@@ -27,6 +27,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.event.TransactionPhase;
+import jakarta.transaction.Status;
+import jakarta.transaction.TransactionSynchronizationRegistry;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -38,15 +40,18 @@ public class ClusterEventBroadcaster {
    private final HazelcastInstance hazelcast;
    private final ExpositionDiscoveryServiceHandler expositionDiscoveryServiceHandler;
    private final Event<ClusterEvents.ExpositionGatewayGroupEvent> expositionChanges;
+   private final TransactionSynchronizationRegistry transactionSynchronizationRegistry;
 
    private ITopic<ClusterEvents.ExpositionGatewayGroupEvent> expositionChangesTopic;
 
    public ClusterEventBroadcaster(HazelcastInstance hazelcast,
                                   @GrpcService ExpositionDiscoveryServiceHandler expositionDiscoveryServiceHandler,
-                                  Event<ClusterEvents.ExpositionGatewayGroupEvent> expositionChanges) {
+                                  Event<ClusterEvents.ExpositionGatewayGroupEvent> expositionChanges,
+                                  TransactionSynchronizationRegistry transactionSynchronizationRegistry) {
       this.hazelcast = hazelcast;
       this.expositionDiscoveryServiceHandler = expositionDiscoveryServiceHandler;
       this.expositionChanges = expositionChanges;
+      this.transactionSynchronizationRegistry = transactionSynchronizationRegistry;
    }
 
    /** Application startup method. */
@@ -65,7 +70,7 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionCreationEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition creation for exposition '%s'", exposition.id);
-      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupCreationEvent(exposition, gatewayGroup));
+      dispatchExpositionChange(new ClusterEvents.ExpositionGatewayGroupCreationEvent(exposition, gatewayGroup));
    }
 
    /**
@@ -75,7 +80,7 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionUpdateEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition change for exposition '%s'", exposition.id);
-      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupUpdateEvent(exposition, gatewayGroup));
+      dispatchExpositionChange(new ClusterEvents.ExpositionGatewayGroupUpdateEvent(exposition, gatewayGroup));
    }
 
    /**
@@ -85,7 +90,15 @@ public class ClusterEventBroadcaster {
     */
    public void publishExpositionDeletionEvent(Exposition exposition, GatewayGroup gatewayGroup) {
       logger.infof("Publishing exposition deletion for exposition '%s'", exposition.id);
-      expositionChanges.fire(new ClusterEvents.ExpositionGatewayGroupDeletionEvent(exposition, gatewayGroup));
+      dispatchExpositionChange(new ClusterEvents.ExpositionGatewayGroupDeletionEvent(exposition, gatewayGroup));
+   }
+
+   private void dispatchExpositionChange(ClusterEvents.ExpositionGatewayGroupEvent event) {
+      // Arc can notify AFTER_SUCCESS observers immediately when the transaction is already rollback-only.
+      if (transactionSynchronizationRegistry.getTransactionStatus() == Status.STATUS_MARKED_ROLLBACK) {
+         return;
+      }
+      expositionChanges.fire(event);
    }
 
    void publishExpositionChangeAfterCommit(
