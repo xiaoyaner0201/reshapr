@@ -1,0 +1,102 @@
+name: validate-issue-574
+on:
+  push:
+    branches:
+      - validation/issue-574
+permissions:
+  contents: read
+concurrency:
+  group: validate-issue-574
+  cancel-in-progress: false
+jobs:
+  transaction-regression:
+    if: github.repository == 'xiaoyaner0201/reshapr'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: reshapr_test
+          POSTGRES_USER: reshapr_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --memory 256m
+          --health-cmd "pg_isready -U reshapr_test -d reshapr_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MAVEN_OPTS: -Xmx1536m -XX:ActiveProcessorCount=2
+      QUARKUS_DATASOURCE_DEVSERVICES_ENABLED: 'false'
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/reshapr_test
+      QUARKUS_DATASOURCE_USERNAME: reshapr_test
+      QUARKUS_DATASOURCE_PASSWORD: synthetic-ci-only
+      QUARKUS_HTTP_TEST_HOST: 127.0.0.1
+      QUARKUS_HTTP_TEST_PORT: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          java-version: '25'
+          distribution: temurin
+          cache: maven
+      - name: Record candidate and isolated runner
+        run: |
+          mkdir -p validation-evidence
+          git rev-parse HEAD HEAD^{tree} > validation-evidence/head.txt
+          git diff --exit-code cb7d85662002ac5f8746be66939775f58dce708d -- control-plane/src/main control-plane/src/test
+          java -version
+          free -m
+      - name: Install unchanged prerequisites
+        run: |
+          set -o pipefail
+          mvn -B -ntp -pl api,commons -am -DskipTests install 2>&1 | tee validation-evidence/prerequisites.log
+      - name: Test candidate against real PostgreSQL
+        run: |
+          set -o pipefail
+          mvn -B -ntp -pl control-plane -Dtest=ClusterEventBroadcasterTest -DargLine='-Xmx1024m -XX:ActiveProcessorCount=2' -Dhazelcast.local.localAddress=127.0.0.1 test 2>&1 | tee validation-evidence/candidate.log
+          cp -R control-plane/target/surefire-reports validation-evidence/candidate-reports
+          python3 - <<'PY'
+          import xml.etree.ElementTree as E
+          r=E.parse('control-plane/target/surefire-reports/TEST-io.reshapr.ctrl.service.ClusterEventBroadcasterTest.xml').getroot()
+          expected={'tests':'12','failures':'0','errors':'0','skipped':'0'}
+          actual={k:r.get(k) for k in expected}
+          print(actual)
+          assert actual==expected, actual
+          PY
+      - name: Prove the same test detects the unpatched publication boundary
+        run: |
+          git show 8dd58e3edf70db8c12432028570cbd5470c38cbe:control-plane/src/main/java/io/reshapr/ctrl/service/ClusterEventBroadcaster.java > control-plane/src/main/java/io/reshapr/ctrl/service/ClusterEventBroadcaster.java
+          set +e
+          set -o pipefail
+          mvn -B -ntp -pl control-plane -Dtest=ClusterEventBroadcasterTest -DargLine='-Xmx1024m -XX:ActiveProcessorCount=2' -Dhazelcast.local.localAddress=127.0.0.1 test 2>&1 | tee validation-evidence/baseline.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > validation-evidence/baseline.exit
+          cp -R control-plane/target/surefire-reports validation-evidence/baseline-reports
+          python3 - <<'PY'
+          import xml.etree.ElementTree as E
+          r=E.parse('control-plane/target/surefire-reports/TEST-io.reshapr.ctrl.service.ClusterEventBroadcasterTest.xml').getroot()
+          actual={k:r.get(k) for k in ['tests','failures','errors','skipped']}
+          print(actual)
+          assert actual['tests']=='12' and actual['errors']=='0' and actual['skipped']=='0',actual
+          assert int(actual['failures'])>0, 'The regression test did not distinguish the unpatched source'
+          assert int(open('validation-evidence/baseline.exit').read())!=0
+          failed=[c.get('name') for c in r.findall('testcase') if c.find('failure') is not None]
+          print('Discriminating cases:',failed)
+          PY
+      - name: Preserve actual logs and machine-readable reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: transaction-regression-evidence
+          path: |
+            validation-evidence/
+            control-plane/target/surefire-reports/
+          if-no-files-found: error
+          retention-days: 7
