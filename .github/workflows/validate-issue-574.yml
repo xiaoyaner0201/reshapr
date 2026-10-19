@@ -49,7 +49,7 @@ jobs:
         run: |
           mkdir -p validation-evidence
           git rev-parse HEAD HEAD^{tree} > validation-evidence/head.txt
-          git diff --exit-code cb7d85662002ac5f8746be66939775f58dce708d -- control-plane/src/main control-plane/src/test
+          git diff --exit-code 7780c75f7587a40bb81c1a51904d8fe4d7680685 -- control-plane/src/main control-plane/src/test
           java -version
           free -m
       - name: Install unchanged prerequisites
@@ -69,6 +69,11 @@ jobs:
           print(actual)
           assert actual==expected, actual
           PY
+      - name: Exercise existing ORM and discovery integration tests
+        run: |
+          set -o pipefail
+          mvn -B -ntp -pl control-plane -Dtest=ExpositionManagerServiceTest,ExpositionDiscoveryServiceHandlerTest -DargLine='-Xmx1024m -XX:ActiveProcessorCount=2' -Dhazelcast.local.localAddress=127.0.0.1 test 2>&1 | tee validation-evidence/existing-integration.log
+          cp -R control-plane/target/surefire-reports validation-evidence/existing-integration-reports
       - name: Prove the same test detects the unpatched publication boundary
         run: |
           git show 8dd58e3edf70db8c12432028570cbd5470c38cbe:control-plane/src/main/java/io/reshapr/ctrl/service/ClusterEventBroadcaster.java > control-plane/src/main/java/io/reshapr/ctrl/service/ClusterEventBroadcaster.java
